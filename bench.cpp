@@ -1,4 +1,5 @@
 #include "bench.hpp"
+#include "helpers.hpp"
 #include "l3tx.hpp"
 #include <algorithm>
 #include <assert.h>
@@ -6,8 +7,11 @@
 #include <iostream>
 #include <ipcl/ciphertext.hpp>
 #include <ipcl/ipcl.hpp>
+#include <ipcl/plaintext.hpp>
 #include <ipcl/pub_key.hpp>
+#include <iterator>
 #include <random>
+#include <ranges>
 #include <secp256k1.h>
 #include <sys/random.h>
 
@@ -17,7 +21,7 @@ namespace {
 constexpr uint64_t operator_balance = 100'000'000'000'000ULL;
 constexpr uint64_t account_starting_balance = 10'000'000ULL;
 constexpr uint64_t max_transaction_amount = 10'000ULL;
-constexpr auto num = 1'000'000u;
+constexpr auto num = 10000u;
 
 static int fill_random(unsigned char *data, size_t size) {
   size_t res = getrandom(data, size, 0);
@@ -63,6 +67,20 @@ void fund_accounts(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
   }
 }
 
+void create_encrypted_accounts(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
+                               l3tx::state_t &state,
+                               l3tx::encrypted_state_t &encrypted_state,
+                               const ipcl::PublicKey pubkey) {
+  ipcl::PlainText sb_plaintext{
+      helpers::uint64_to_vector(account_starting_balance)};
+  auto sb_cyphertext = pubkey.encrypt(sb_plaintext);
+  std::ranges::transform(
+      state.accounts, std::back_inserter(encrypted_state.accounts),
+      [&](const auto &acct) {
+        return l3tx::encrypted_account_t{acct.address, 0, sb_cyphertext};
+      });
+};
+
 void send_random_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
                     l3tx::state_t &state, const std::vector<Seckey> &keys,
                     uint64_t num) {
@@ -84,6 +102,31 @@ void send_random_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
         ctx, keys[from].data(),
         l3tx::transaction_t{from, to, amount, sender.nonce + 1}};
     assert(l3tx::process_transaction(ssl, ctx, state, tx));
+  }
+}
+
+void send_random_encrypted_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
+                              l3tx::encrypted_state_t &state,
+                              ipcl::PublicKey pubkey,
+                              const std::vector<Seckey> &keys, uint64_t num) {
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<uint64_t> distribution(0,
+                                                       max_transaction_amount);
+  std::uniform_int_distribution<size_t> user(0, state.accounts.size() - 1);
+
+  for (uint64_t i = 0; i < num; i++) {
+    size_t from = user(gen);
+    auto &sender = state.accounts[from];
+    size_t to = user(gen);
+    uint64_t amount = distribution(gen);
+    ipcl::PlainText amount_pt{helpers::uint64_to_vector(amount)};
+    auto amount_ct = pubkey.encrypt(amount_pt);
+    l3tx::signed_encrypted_transaction_t tx{
+        ssl, ctx, keys[from].data(),
+        l3tx::encrypted_transaction_t{
+            l3tx::transaction_t{from, to, amount, sender.nonce + 1}, pubkey}};
+    assert(l3tx::process_encrypted_transaction(ssl, ctx, state, tx));
   }
 }
 
@@ -152,12 +195,21 @@ int bench() noexcept {
   printf("\nGenerating Private key for Paillier encryption.\n");
   ipcl::KeyPair ipcl_key = ipcl::generateKeypair(2048, true);
 
-  printf("\nFunding %d accounts.\n", num);
+  printf("\nReusing %d accounts with encrypted balances.\n", num);
   state.transactions.clear();
+  encrypted_state_t encrypted_state{};
+  create_encrypted_accounts(ssl, ctx, state, encrypted_state, ipcl_key.pub_key);
+
+  // Send encrypted transactions
+  printf("\nSending %d random encrypted transactions.\n", num);
   start_time = step;
-  /* fund_encrypted_accounts(ssl, ctx, state, encrypted_state, ipcl_key.pub_key,
-                          keys[0]);
-    */
+  send_random_encrypted_tx(ssl, ctx, encrypted_state, ipcl_key.pub_key, keys,
+                           num);
+  step = std::chrono::steady_clock::now();
+  duration =
+      std::chrono::duration_cast<std::chrono::microseconds>(step - start_time);
+  std::cout << "Performed @" << duration.count() / (num - 1)
+            << " microseconds per transaction" << std::endl;
 
   EVP_MD_CTX_free(ssl);
   return 0;

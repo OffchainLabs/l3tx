@@ -16,6 +16,7 @@ find_package(IPCL 2.0.0
 
 set (L3TX_SRC
  	main.cpp
+        helpers.cpp
         bench.cpp
         l3tx.cpp
 )
@@ -27,4 +28,4 @@ target_include_directories(l3tx PRIVATE
 	${IPCL_INC_DIR}
 )
 
-target_link_libraries(l3tx IPCL::ipcl secp256k1 crypto)
+target_link_libraries(l3tx IPCL::ipcl /usr/local/lib/ipcl/ippcrypto/libippcp.so secp256k1 crypto)

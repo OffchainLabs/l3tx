@@ -1,6 +1,9 @@
 #include "l3tx.hpp"
+#include "helpers.hpp"
 #include <assert.h>
 #include <cstring>
+#include <ipcl/plaintext.hpp>
+#include <ipcl/pub_key.hpp>
 #include <string.h>
 
 namespace {
@@ -37,7 +40,8 @@ bool check_signature(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
 
   return !memcmp(hashed_pubkey + 12, expected, 20);
 };
-}
+
+}; // namespace
 namespace l3tx {
 bool is_transaction_signature_valid(EVP_MD_CTX *ssl,
                                     const secp256k1_context *ctx,
@@ -49,6 +53,18 @@ bool is_transaction_signature_valid(EVP_MD_CTX *ssl,
       ssl, ctx, signed_tx.signature.data(), signed_tx.signature[64],
       reinterpret_cast<const unsigned char *>(&signed_tx.message),
       sender.address.data());
+};
+
+bool is_encrypted_transaction_signature_valid(
+    EVP_MD_CTX *ssl, const secp256k1_context *ctx,
+    const encrypted_state_t &state,
+    const signed_encrypted_transaction_t &signed_tx) {
+
+  auto sender = state.accounts[signed_tx.message.from];
+  unsigned char hash[32];
+  signed_tx.message.hash(ssl, hash);
+  return check_signature(ssl, ctx, signed_tx.signature.data(),
+                         signed_tx.signature[64], hash, sender.address.data());
 };
 
 create_message_t::create_message_t(EVP_MD_CTX *ssl,
@@ -92,16 +108,10 @@ signed_transaction_t::signed_transaction_t(const secp256k1_context *ctx,
                                            const unsigned char *seckey,
                                            transaction_t &&tx) noexcept
     : message{std::move(tx)} {
-
   secp256k1_ecdsa_recoverable_signature sig;
   auto return_val = secp256k1_ecdsa_sign_recoverable(
       ctx, &sig, reinterpret_cast<const unsigned char *>(&message.from), seckey,
       NULL, NULL);
-  if (!return_val) {
-    printf("couldn't sign over transaction from: %lu, to: %lu, amount: %lu, "
-           "nonce: %lu",
-           message.from, message.to, message.amount, message.nonce);
-  }
   assert(return_val);
 
   int id;
@@ -119,6 +129,27 @@ bool process_create_message(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
   state.accounts.emplace_back(account_t{msg.address});
   return true;
 };
+
+encrypted_account_t::encrypted_account_t(
+    const ipcl::PublicKey &key,
+    const std::array<unsigned char, 20> &address) noexcept
+    : address{address} {
+  ipcl::PlainText plaintext_balance(uint32_t{}); // zero is encoded the same way
+  balance = key.encrypt(plaintext_balance);
+};
+
+bool process_encrypted_create_message(EVP_MD_CTX *ssl,
+                                      const secp256k1_context *ctx,
+                                      const ipcl::PublicKey &key,
+                                      encrypted_state_t &state,
+                                      const create_message_t &msg) {
+  if (!check_signature(ssl, ctx, msg.signature.data(), msg.signature[64],
+                       msg_hash, msg.address.data())) {
+    return false;
+  }
+  state.accounts.emplace_back(encrypted_account_t{key, msg.address});
+  return true;
+}
 
 bool process_transaction(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
                          state_t &state,
@@ -143,4 +174,64 @@ bool process_transaction(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
   state.transactions.emplace_back(signed_tx.message);
   return true;
 }
+
+bool process_encrypted_transaction(
+    EVP_MD_CTX *ssl, const secp256k1_context *ctx, encrypted_state_t &state,
+    const signed_encrypted_transaction_t &signed_tx) {
+  auto tx = signed_tx.message;
+  if (tx.from >= state.accounts.size() || tx.to >= state.accounts.size())
+    return false;
+  auto &sender = state.accounts[tx.from];
+  if (tx.nonce != sender.nonce + 1)
+    return false;
+
+  // Verify signature;
+  if (!is_encrypted_transaction_signature_valid(ssl, ctx, state, signed_tx)) {
+    return false;
+  }
+  sender.nonce++;
+  ipcl::PlainText minus_one(-1);
+  auto minus_amount = tx.amount * minus_one;
+  sender.balance = sender.balance + minus_amount;
+  auto &receiver = state.accounts[tx.to];
+  receiver.balance = receiver.balance + tx.amount;
+  state.transactions.emplace_back(signed_tx.message);
+  return true;
 }
+
+encrypted_transaction_t::encrypted_transaction_t(
+    const transaction_t &tx, const ipcl::PublicKey &key) noexcept
+    : from{tx.from}, to{tx.to}, nonce{tx.nonce} {
+  ipcl::PlainText plaintext_amount(helpers::uint64_to_vector(tx.amount));
+  amount = key.encrypt(plaintext_amount);
+};
+
+void encrypted_transaction_t::hash(EVP_MD_CTX *ssl,
+                                   unsigned char *digest) const noexcept {
+  EVP_DigestInit_ex(ssl, EVP_sha3_256(), NULL);
+  EVP_DigestUpdate(ssl, &from, 24); // hash from, to, nonce
+  std::ostringstream os;
+  ipcl::serializer::serialize(os, amount);
+  auto serialized = os.str();
+  EVP_DigestUpdate(ssl, serialized.data(), serialized.size());
+  EVP_DigestFinal(ssl, digest, NULL);
+};
+
+signed_encrypted_transaction_t::signed_encrypted_transaction_t(
+    EVP_MD_CTX *ssl, const secp256k1_context *ctx, const unsigned char *seckey,
+    encrypted_transaction_t &&tx) noexcept
+    : message{std::move(tx)} {
+  secp256k1_ecdsa_recoverable_signature sig;
+  unsigned char tx_hash[32];
+  tx.hash(ssl, tx_hash);
+  auto return_val =
+      secp256k1_ecdsa_sign_recoverable(ctx, &sig, tx_hash, seckey, NULL, NULL);
+  assert(return_val);
+
+  int id;
+  secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, signature.data(),
+                                                          &id, &sig);
+  signature[64] = id;
+};
+
+}; // namespace l3tx
