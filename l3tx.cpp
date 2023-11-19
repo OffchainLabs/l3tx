@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <cstring>
 #include <ipcl/plaintext.hpp>
+#include <ipcl/pri_key.hpp>
 #include <ipcl/pub_key.hpp>
 #include <string.h>
 
@@ -173,6 +174,29 @@ bool process_transaction(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
   receiver.balance += tx.amount;
   state.transactions.emplace_back(signed_tx.message);
   return true;
+}
+
+bool validate_encrypted_transaction_balances(
+    EVP_MD_CTX *ssl, const secp256k1_context *ctx, encrypted_state_t &state,
+    const ipcl::PrivateKey &privkey, const encrypted_transaction_t &tx) {
+  auto decripted_amount = privkey.decrypt(tx.amount);
+  std::vector<uint32_t> amount_vec{decripted_amount};
+  assert(amount_vec.size() <= 2);
+
+  auto sender = state.accounts[tx.from];
+  auto decripted_balance = privkey.decrypt(sender.balance);
+  std::vector<uint32_t> balance_vec{decripted_balance};
+  assert(balance_vec.size() <= 2);
+
+  if (amount_vec.size() == balance_vec.size()) {
+    return !std::lexicographical_compare(
+        balance_vec.rbegin(), balance_vec.rend(), amount_vec.rbegin(),
+        amount_vec.rend());
+  }
+  if (amount_vec.size() < balance_vec.size()) {
+    return true;
+  }
+  return false;
 }
 
 bool process_encrypted_transaction(

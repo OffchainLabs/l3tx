@@ -81,6 +81,12 @@ bool process_encrypted_create_message(EVP_MD_CTX *, const secp256k1_context *,
 bool process_transaction(EVP_MD_CTX *, const secp256k1_context *, state_t &,
                          const signed_transaction_t &);
 
+bool validate_encrypted_transaction_balances(EVP_MD_CTX *,
+                                             const secp256k1_context *,
+                                             encrypted_state_t &,
+                                             const ipcl::PrivateKey &,
+                                             const encrypted_transaction_t &);
+
 bool process_encrypted_transaction(EVP_MD_CTX *, const secp256k1_context *,
                                    encrypted_state_t &,
                                    const signed_encrypted_transaction_t &);

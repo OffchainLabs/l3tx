@@ -3,6 +3,7 @@
 #include "l3tx.hpp"
 #include <algorithm>
 #include <assert.h>
+#include <bits/ranges_algo.h>
 #include <chrono>
 #include <iostream>
 #include <ipcl/ciphertext.hpp>
@@ -21,7 +22,7 @@ namespace {
 constexpr uint64_t operator_balance = 100'000'000'000'000ULL;
 constexpr uint64_t account_starting_balance = 10'000'000ULL;
 constexpr uint64_t max_transaction_amount = 10'000ULL;
-constexpr auto num = 10000u;
+constexpr auto num = 1000u;
 
 static int fill_random(unsigned char *data, size_t size) {
   size_t res = getrandom(data, size, 0);
@@ -105,16 +106,18 @@ void send_random_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
   }
 }
 
-void send_random_encrypted_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
-                              l3tx::encrypted_state_t &state,
-                              ipcl::PublicKey pubkey,
-                              const std::vector<Seckey> &keys, uint64_t num) {
+std::vector<l3tx::signed_encrypted_transaction_t>
+send_random_encrypted_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
+                         l3tx::encrypted_state_t &state, ipcl::PublicKey pubkey,
+                         const std::vector<Seckey> &keys, uint64_t num) {
   std::random_device rd;
   std::mt19937 gen(rd());
   std::uniform_int_distribution<uint64_t> distribution(0,
                                                        max_transaction_amount);
   std::uniform_int_distribution<size_t> user(0, state.accounts.size() - 1);
 
+  std::vector<l3tx::signed_encrypted_transaction_t> ret{};
+  ret.reserve(num);
   for (uint64_t i = 0; i < num; i++) {
     size_t from = user(gen);
     auto &sender = state.accounts[from];
@@ -127,7 +130,9 @@ void send_random_encrypted_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
         l3tx::encrypted_transaction_t{
             l3tx::transaction_t{from, to, amount, sender.nonce + 1}, pubkey}};
     assert(l3tx::process_encrypted_transaction(ssl, ctx, state, tx));
+    ret.emplace_back(tx);
   }
+  return ret;
 }
 
 void report_state_size(const l3tx::state_t &state) {
@@ -200,11 +205,44 @@ int bench() noexcept {
   encrypted_state_t encrypted_state{};
   create_encrypted_accounts(ssl, ctx, state, encrypted_state, ipcl_key.pub_key);
 
-  // Send encrypted transactions
-  printf("\nSending %d random encrypted transactions.\n", num);
+  // Create and send encrypted transactions
+  printf("\nCreating and processing %d random encrypted transactions.\n", num);
+  auto copied_encrypted_state = encrypted_state;
   start_time = step;
-  send_random_encrypted_tx(ssl, ctx, encrypted_state, ipcl_key.pub_key, keys,
-                           num);
+  auto txs = send_random_encrypted_tx(ssl, ctx, encrypted_state,
+                                      ipcl_key.pub_key, keys, num);
+  step = std::chrono::steady_clock::now();
+  duration =
+      std::chrono::duration_cast<std::chrono::microseconds>(step - start_time);
+  std::cout << "Performed @" << duration.count() / (num - 1)
+            << " microseconds per transaction" << std::endl;
+
+  // reprocess encrypted transactions
+  printf("\nReprocessing %d encrypted transactions (no decryption, watchover "
+         "validators).\n",
+         num);
+  encrypted_state = copied_encrypted_state;
+  start_time = step;
+  std::ranges::for_each(txs, [&](const auto &tx) {
+    assert(process_encrypted_transaction(ssl, ctx, encrypted_state, tx));
+  });
+  step = std::chrono::steady_clock::now();
+  duration =
+      std::chrono::duration_cast<std::chrono::microseconds>(step - start_time);
+  std::cout << "Performed @" << duration.count() / (num - 1)
+            << " microseconds per transaction" << std::endl;
+
+  // reprocess encrypted transactions
+  printf("\nReprocessing %d encrypted transactions (balance range checks by "
+         "decryption).\n",
+         num);
+  encrypted_state = copied_encrypted_state;
+  start_time = step;
+  std::ranges::for_each(txs, [&](const auto &tx) {
+    assert(validate_encrypted_transaction_balances(
+        ssl, ctx, encrypted_state, ipcl_key.priv_key, tx.message));
+    assert(process_encrypted_transaction(ssl, ctx, encrypted_state, tx));
+  });
   step = std::chrono::steady_clock::now();
   duration =
       std::chrono::duration_cast<std::chrono::microseconds>(step - start_time);
