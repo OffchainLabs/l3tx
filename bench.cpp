@@ -23,7 +23,7 @@ namespace {
 constexpr uint64_t operator_balance = 10'000'000'000'000ULL;
 constexpr uint64_t account_starting_balance = 10'000'000'000ULL;
 constexpr uint64_t max_transaction_amount = 1'000'000'000ULL;
-constexpr auto num = 1000u;
+constexpr auto num = 10u;
 
 static int fill_random(unsigned char *data, size_t size) {
   size_t res = getrandom(data, size, 0);
