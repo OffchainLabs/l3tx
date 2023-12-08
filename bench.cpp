@@ -9,6 +9,7 @@
 #include <ipcl/ciphertext.hpp>
 #include <ipcl/ipcl.hpp>
 #include <ipcl/plaintext.hpp>
+#include <ipcl/pri_key.hpp>
 #include <ipcl/pub_key.hpp>
 #include <iterator>
 #include <random>
@@ -19,9 +20,9 @@
 using Seckey = std::array<unsigned char, 32>;
 
 namespace {
-constexpr uint64_t operator_balance = 100'000'000'000'000ULL;
-constexpr uint64_t account_starting_balance = 10'000'000ULL;
-constexpr uint64_t max_transaction_amount = 10'000ULL;
+constexpr uint64_t operator_balance = 10'000'000'000'000ULL;
+constexpr uint64_t account_starting_balance = 10'000'000'000ULL;
+constexpr uint64_t max_transaction_amount = 1'000'000'000ULL;
 constexpr auto num = 1000u;
 
 static int fill_random(unsigned char *data, size_t size) {
@@ -68,19 +69,33 @@ void fund_accounts(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
   }
 }
 
-void create_encrypted_accounts(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
-                               l3tx::state_t &state,
+void create_encrypted_accounts(l3tx::state_t &state,
                                l3tx::encrypted_state_t &encrypted_state,
-                               const ipcl::PublicKey pubkey) {
-  ipcl::PlainText sb_plaintext{
-      helpers::uint64_to_vector(account_starting_balance)};
-  auto sb_cyphertext = pubkey.encrypt(sb_plaintext);
+                               const ipcl::PublicKey &pubkey) {
+  auto sb_vec = helpers::uint64_to_vector(account_starting_balance);
+  ipcl::CipherText sb_cyphertext{pubkey, sb_vec};
   std::ranges::transform(
       state.accounts, std::back_inserter(encrypted_state.accounts),
       [&](const auto &acct) {
         return l3tx::encrypted_account_t{acct.address, 0, sb_cyphertext};
       });
 };
+
+void log_account_balance(const l3tx::encrypted_account_t &acct,
+                         const ipcl::PrivateKey &key) {
+  auto decripted_balance = key.decrypt(acct.balance);
+  std::vector<uint32_t> balance_vec{decripted_balance};
+  printf("balance lenght: %lu ", balance_vec.size());
+  uint64_t balance{balance_vec[0]};
+  printf("balance: %lu\n", balance);
+}
+
+void log_account_balances(const l3tx::encrypted_state_t &encrypted_state,
+                          const ipcl::PrivateKey &key) {
+  std::ranges::for_each(encrypted_state.accounts, [&](const auto &acct) {
+    log_account_balance(acct, key);
+  });
+}
 
 void send_random_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
                     l3tx::state_t &state, const std::vector<Seckey> &keys,
@@ -123,8 +138,8 @@ send_random_encrypted_tx(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
     auto &sender = state.accounts[from];
     size_t to = user(gen);
     uint64_t amount = distribution(gen);
-    ipcl::PlainText amount_pt{helpers::uint64_to_vector(amount)};
-    auto amount_ct = pubkey.encrypt(amount_pt);
+    printf("sending transaction with amount %lu, from: %lu, to: %lu\n", amount,
+           from, to);
     l3tx::signed_encrypted_transaction_t tx{
         ssl, ctx, keys[from].data(),
         l3tx::encrypted_transaction_t{
@@ -203,7 +218,8 @@ int bench() noexcept {
   printf("\nReusing %d accounts with encrypted balances.\n", num);
   state.transactions.clear();
   encrypted_state_t encrypted_state{};
-  create_encrypted_accounts(ssl, ctx, state, encrypted_state, ipcl_key.pub_key);
+  create_encrypted_accounts(state, encrypted_state, ipcl_key.pub_key);
+  log_account_balances(encrypted_state, ipcl_key.priv_key);
 
   // Create and send encrypted transactions
   printf("\nCreating and processing %d random encrypted transactions.\n", num);

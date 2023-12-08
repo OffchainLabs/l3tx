@@ -134,10 +134,7 @@ bool process_create_message(EVP_MD_CTX *ssl, const secp256k1_context *ctx,
 encrypted_account_t::encrypted_account_t(
     const ipcl::PublicKey &key,
     const std::array<unsigned char, 20> &address) noexcept
-    : address{address} {
-  ipcl::PlainText plaintext_balance(uint32_t{}); // zero is encoded the same way
-  balance = key.encrypt(plaintext_balance);
-};
+    : address{address}, balance{key, uint32_t{}} {}
 
 bool process_encrypted_create_message(EVP_MD_CTX *ssl,
                                       const secp256k1_context *ctx,
@@ -182,11 +179,22 @@ bool validate_encrypted_transaction_balances(
   auto decripted_amount = privkey.decrypt(tx.amount);
   std::vector<uint32_t> amount_vec{decripted_amount};
   assert(amount_vec.size() <= 2);
+  if (amount_vec.size() < 2) {
+    printf("Vec less than 2, %u\n", amount_vec[0]);
+  } else {
+    printf("vec is higher than 2 %u:%u\n", amount_vec[0], amount_vec[1]);
+  }
 
   auto sender = state.accounts[tx.from];
   auto decripted_balance = privkey.decrypt(sender.balance);
   std::vector<uint32_t> balance_vec{decripted_balance};
   assert(balance_vec.size() <= 2);
+  if (balance_vec.size() < 2) {
+    printf("balance vec less than 2, %u\n", balance_vec[0]);
+  } else {
+    printf("balance vec is higher than 2 %u:%u\n", balance_vec[0],
+           balance_vec[1]);
+  }
 
   if (amount_vec.size() == balance_vec.size()) {
     return !std::lexicographical_compare(
@@ -225,10 +233,8 @@ bool process_encrypted_transaction(
 
 encrypted_transaction_t::encrypted_transaction_t(
     const transaction_t &tx, const ipcl::PublicKey &key) noexcept
-    : from{tx.from}, to{tx.to}, nonce{tx.nonce} {
-  ipcl::PlainText plaintext_amount(helpers::uint64_to_vector(tx.amount));
-  amount = key.encrypt(plaintext_amount);
-};
+    : from{tx.from}, to{tx.to}, nonce{tx.nonce},
+      amount{key, helpers::uint64_to_vector(tx.amount)} {};
 
 void encrypted_transaction_t::hash(EVP_MD_CTX *ssl,
                                    unsigned char *digest) const noexcept {

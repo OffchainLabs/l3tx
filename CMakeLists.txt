@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} -Wall -Werror -march=native -g -m64 -ffast-math -fdiagnostics-color")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -Wall -Werror -march=native -m64 -ffast-math -fdiagnostics-color")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -Wall -Werror -O3 -march=native -m64 -ffast-math -fdiagnostics-color")
 
 # Intel Paillier Cryto Library
 find_package(IPCL 2.0.0
